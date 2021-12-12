@@ -9,72 +9,26 @@
 #include <time.h>
 #include "gaussJordan.h"
 
-void divideRow(float *A, int processNum, int i){
-    /*int k = 0;
-    while (k < numCols){
-        float divisor = *(A + i + 4*i);
-        if (!divisor)
-            return;
-        for (int j = 0; j < 4; j++)
-            B[4 * i + j] =  A[4 * i + j] / divisor;
-        k++;
-        i++;
-    }*/
+void divideRow(float *A, int processNum, int i, int numRows){
     if (processNum != 0)
         return;
-    float divisor = *(A + i + 4*i);
+    float divisor = *(A + i + (numRows + 1)*i);
     if(!divisor)
         return;
-    for (int j = 0; j < 4; j++)
-        A[j + 4*i] = A[j + 4*i] / divisor;
+    for (int j = 0; j < (numRows + 1); j++)
+        A[j + (numRows + 1)*i] = A[j + (numRows + 1)*i] / divisor;
 }
 
-/*void sweep(float *A, float *B, int pivot, int numLines, int processNum){
-    int annihilationMultiple;
-    int start = numLines * processNum;
-    //this for loop sweeps the current column
-    for (int  k = start; k < numLines; k++){
-        if (k == pivot)
-            continue;
-        annihilationMultiple = -1 * A[pivot + 4 * k];
-        for(int m = pivot; m < 4; m++){
-            B[m + 4 * k] += A[m + 4 * pivot] * annihilationMultiple;
-        }
-    }
-}*/
-
-/*void sweep(float *B, int numLines, int processNum){
-    int annihilationMultiple;
-    for(int i = 0; i < 3; i++){
-        int start = (i + processNum + 1) % 3;
-        annihilationMultiple = -1 * B[i + 4 * start];
-        for (int j = start; j < start + numLines; j++){
-            for(int k = 0; k < 4; k++)
-                B[k + (4 * j)] += annihilationMultiple * B[k + (4 * i)];
-        }
-    }
-}*/
-
-void sweep(float *A, int numLines, int processNum, int i){
-    int annihilationMultiple;
-    int start = (i + processNum + 1) % 3;
-    annihilationMultiple = -1 * A[i + 4 * start];
+void sweep(float *A, int numLines, int processNum, int i, int numRows){
+    float annihilationMultiple;
+    int start = (i + processNum + 1) % numRows;
     for (int j = 0; j < numLines; j++){
-        for(int k = 0; k < 4; k++)
-            A[k + (4 * start)] = A[k + (4 * start)] + annihilationMultiple * A[k + (4 * i)];
-        start = (start + 1) % 3;
+        annihilationMultiple = -1 * A[i + (numRows + 1)* start];
+        for(int k = 0; k < (numRows + 1); k++)
+        A[k + ((numRows + 1) * start)] = A[k + ((numRows + 1) * start)] + annihilationMultiple * A[k + ((numRows + 1) * i)];
+        start = (start + 1) % numRows;
     }
 }
-
-/*void gaussJordanSolve(float *A, float *B, int numLines, int processNum){
-    int j = 0;
-    for (int i = 0; i < 3; i++){
-        //Here, we take our pivot (make sure it's not zero) and divide the whole row
-        if (!processNum)
-            divideRow(A, B, numLines, i);
-        sweep(B, numLines, processNum);
-    }
-}*/
 
 void synch(int par_id,int par_count,int *ready){
     int synchid = ready[par_count]+1; 
@@ -95,13 +49,12 @@ void synch(int par_id,int par_count,int *ready){
     }
 }
 
-void print_matrix(float* m)//for 3*4
-{
+void print_matrix(float* m, int numRows){
     printf("_______________________________________________________\n");
-    for (int r = 0; r < 3; r++)
+    for (int r = 0; r < numRows; r++)
         {
-        for (int c = 0; c < 4; c++)
-            printf("%.1f  ", m[c + r * 4]);            
+        for (int c = 0; c < (numRows + 1); c++)
+            printf("%.1f  ", m[c + r * (numRows + 1)]);            
         printf("\n");
         }
     printf("_______________________________________________________\n");
@@ -109,57 +62,68 @@ void print_matrix(float* m)//for 3*4
 
 int main(int argc, char **argv){
 
-    int numLines, processNum, n;
+    int numLines, processNum, multiSwitch, numRows, n = 1;
     float dotProduct;
     sscanf(argv[0], "%d", &processNum);
-    sscanf(argv[1], "%d", &n);
+    sscanf(argv[1], "%d", &multiSwitch);
+    sscanf(argv[2], "%d", &numRows);
+
+    int matrixSize = numRows*(numRows+1);
+
+    if(multiSwitch)
+        n = numRows - 1;
 
     int fd1 = shm_open("matrixA", O_RDWR | O_CREAT, 0777);
     if(!processNum)
-        ftruncate(fd1, 12*sizeof(float));
-    float *A = mmap(NULL, 12*sizeof(float), PROT_READ | PROT_WRITE, MAP_SHARED, fd1, 0);
-
-    int fd2 = shm_open("matrixA", O_RDWR | O_CREAT, 0777);
-    if(!processNum)
-        ftruncate(fd2, 12*sizeof(float));
-    float *B = mmap(NULL, 12*sizeof(float), PROT_READ | PROT_WRITE, MAP_SHARED, fd2, 0);
+        ftruncate(fd1, matrixSize*sizeof(float));
+    float *A = mmap(NULL, matrixSize*sizeof(float), PROT_READ | PROT_WRITE, MAP_SHARED, fd1, 0);
 
     int fd4 = shm_open("ready", O_RDWR | O_CREAT, 0777);
     if (!processNum)
         ftruncate(fd4, n*sizeof(int));
     int *ready = (int *)mmap(NULL, n*sizeof(int), PROT_READ | PROT_WRITE, MAP_SHARED, fd4, 0);
 
+    srand(time(0)); 
+
     if (!processNum)
-        for(int i = 0; i < 12; i++){A[i] = i+1;}
-    
-    if(!processNum){
-        print_matrix(A);
+        for(int i = 0; i < matrixSize; i++){
+            float x = (float)rand()/(float)(RAND_MAX/10.0);
+            A[i] = x;
+        }
+
+    double avgTime;
+
+    if (!processNum){
+        print_matrix(A, numRows);
     }
 
-    clock_t a = clock();
-    //gaussJordanSolve(A, B, 3/n, processNum)
-    for(int i = 0; i < 3; i++){
-        divideRow(A, processNum, i);
-        synch(processNum, n, ready);
-        sweep(A, 2/n, processNum, i);
-        synch(processNum, n, ready); 
-        if(!processNum)
-            print_matrix(A);  
+    for (int j = 0; j < 20; j++){
+        clock_t a = clock();
+        for(int i = 0; i < numRows; i++){
+            divideRow(A, processNum, i, numRows);
+            synch(processNum, n, ready);
+            sweep(A, (numRows-1)/n, processNum, i, numRows);
+            synch(processNum, n, ready); 
+        }
+        clock_t b =  clock();
+        if(!processNum){
+            avgTime += (double)(b-a)/CLOCKS_PER_SEC;
+            for(int i = 0; i < matrixSize; i++){
+                float x = (float)rand()/(float)(RAND_MAX/10.0);
+                A[i] = x;
+            }
+        }
     }
-    clock_t b =  clock();
 
     if(!processNum){
-        print_matrix(A);
-        printf("time taken: %lf sec\n", (double)(b-a)/CLOCKS_PER_SEC);
+        avgTime = avgTime / 20;
+        printf("avg time taken: %lf sec\n", avgTime);
+        
     }
 
     close(fd1);
     shm_unlink("matrixA");
-    munmap(A, 12*sizeof(float));
-    
-    close(fd2);
-    shm_unlink("matrixA");
-    munmap(B, 12*sizeof(float));
+    munmap(A, matrixSize*sizeof(float));
 
     close(fd4);
     shm_unlink("ready");
